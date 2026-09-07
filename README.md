@@ -12,11 +12,13 @@ This repo is **separate from FastGS** and other projects.
 bitfeat/
   layers/          # BitLinear, BitConv2d (absmean / absmedian + STE)
   models/          # Backbone, heads, BitFeatNet
-  losses/          # Matching / reprojection stubs (MegaDepth-ready TODOs)
-  data/            # Pair dataset stub + synthetic smoke generator
+  losses/          # Depth-warp + dual-softmax / circle matching losses
+  data/            # MegaDepth ImagePairDataset + synthetic smoke generator
+  eval/            # HPatches MMA CLI
   train.py         # python -m bitfeat.train
   extract.py       # python -m bitfeat.extract
 configs/default.yaml
+scripts/prepare_megadepth1500.sh
 tests/
 DESIGN.md
 ```
@@ -28,15 +30,64 @@ git clone https://github.com/awschult002/bitfeat.git
 cd bitfeat
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-# or: pip install -r requirements.txt && pip install -e .
+# depths need: pip install h5py
 ```
 
 ## Smoke train (no MegaDepth / GPU required)
 
 ```bash
 python -m bitfeat.train --smoke
-# or after install:
-bitfeat-train --smoke
+```
+
+## Disk constraint + data downloads
+
+Full MegaDepth is ~**200GB**; typical boxes have ~**80GB** free. BitFeat trains on a **megadepth1500** subset:
+
+| Asset | URL / source | Destination |
+|-------|----------------|-------------|
+| Images | https://cvg-data.inf.ethz.ch/megadepth/megadepth1500.zip | `$ROOT/megadepth1500/` |
+| Depths | MegaDepth v1 dense h5 for scenes `0015`, `0022` | `$ROOT/megadepth1500/depths/{0015,0022}/` |
+| Train index | remapped LoFTR-style npz | `$ROOT/index/train_local/*.npz` |
+| LoFTR scene_info | LoFTR assets `megadepth_test_1500_scene_info` | `$ROOT/index/megadepth_test_1500_scene_info/` |
+| Prep metadata | Parskatt `prep_scene_info.tar` | `$ROOT/prep_scene_info/` |
+| HPatches | [hpatches-sequences-release](https://github.com/hpatches/hpatches-dataset) | `/workspace/datasets/hpatches/hpatches-sequences-release/` |
+
+Unpack / symlink helper:
+
+```bash
+bash scripts/prepare_megadepth1500.sh
+# BITFEAT_DATA=/workspace/datasets/megadepth BITFEAT_DOWNLOADS=/workspace/datasets/downloads
+```
+
+**Expected train layout** (`$ROOT=/workspace/datasets/megadepth`):
+
+```
+$ROOT/megadepth1500/images/{0015,0022}/*.jpg
+$ROOT/megadepth1500/depths/{0015,0022}/*.h5
+$ROOT/Undistorted_SfM/{0015,0022}/{images,depths}   # symlinks
+$ROOT/index/train_local/*.npz                  # ~1500 pairs; paths relative to $ROOT
+```
+
+`train_local` npz keys: `image_paths`, `depth_paths`, `intrinsics`, `poses`, `pair_infos`
+where each pair is `(array([i, j]), overlap)`.
+
+## Train (real data)
+
+```bash
+python -m bitfeat.train --config configs/default.yaml \
+  --data-root /workspace/datasets/megadepth \
+  --index-dir index/train_local \
+  --device cuda
+```
+
+`--smoke` still works without any dataset. Losses warp with depth+pose+K; if a batch has no valid depth/correspondences the geometric terms are skipped gracefully.
+
+## HPatches MMA
+
+```bash
+python -m bitfeat.eval.hpatches \
+  --hpatches-root /workspace/datasets/hpatches/hpatches-sequences-release \
+  --checkpoint checkpoints/bitfeat.pt
 ```
 
 ## Tests (CPU)
@@ -49,26 +100,11 @@ pytest -q
 
 ```bash
 python -m bitfeat.extract --image path/to/image.jpg --out feats.npz
-# bitfeat-extract --image path/to/image.jpg
-```
-
-Outputs an `.npz` with `keypoints`, `scores`, `descriptors`.
-
-## Train (real data — next steps)
-
-1. Download / prepare **MegaDepth** (or DISK-style) image pairs with depth + poses.
-2. Implement loading in `bitfeat/data/pairs.py` (`ImagePairDataset`).
-3. Replace loss stubs in `bitfeat/losses/matching.py` with warp + dual-softmax / circle loss.
-4. Point the config at your data root:
-
-```bash
-# configs/default.yaml → data.root: /path/to/megadepth
-python -m bitfeat.train --config configs/default.yaml --device cuda
 ```
 
 ## Design notes
 
-See [DESIGN.md](DESIGN.md) for architecture rationale, separation from FastGS, and the HPatches MMA + matching-recall eval plan.
+See [DESIGN.md](DESIGN.md).
 
 ## License
 

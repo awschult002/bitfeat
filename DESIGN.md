@@ -33,27 +33,46 @@ Default is deeper+wider than ALIKE-tiny-class backbones; hyperparameters live in
 - **Score map**: dense sigmoid confidence (DKD-style soft-NMS top-k stub for extraction).
 - **Descriptors**: dense L2-normalized vectors (default dim 128), bilinearly upsampled to input resolution for losses / export.
 
+## Data + disk constraint
+
+Full MegaDepth (~200GB) does **not** fit typical boxes (~80GB free). Training uses:
+
+- ETH **megadepth1500** images for scenes `0015` / `0022`
+- Matching dense **depth h5** under `megadepth1500/depths/`
+- Remapped LoFTR-style index at `index/train_local/*.npz` (paths relative to the MegaDepth root)
+
+See `scripts/prepare_megadepth1500.sh` and README download table.
+
+`ImagePairDataset` (`bitfeat/data/pairs.py`) prefers `index/train_local`, then classic LoFTR scene_info, prep_scene_info npy, and finally `pairs_calibrated.txt`. It does **not** invent homography/synthetic poses when only RGB exists — depth h5 or npz poses are required for geometric supervision.
+
 ## Training plan
 
-1. **Smoke**: synthetic pairs (`SyntheticPairDataset`) — already wired via `--smoke`.
-2. **Real**: MegaDepth (or similar) pairs with depth + relative pose.
-3. Losses to flesh out in `losses/matching.py`:
-   - Reprojection / heatmap supervision from warped depth.
-   - Dual-softmax or circle loss on corresponded descriptors.
-   - Optional peakiness / reliability terms.
+1. **Smoke**: synthetic pairs (`SyntheticPairDataset`) via `--smoke`.
+2. **Real**: MegaDepth subset with depth + relative pose (`T_0to1`).
+3. Losses in `losses/matching.py`:
+   - Warp sampled pixels with depth + `T_0to1` + `K`.
+   - Score heatmap BCE at projected correspondences.
+   - Dual-softmax (default) or circle loss on gathered descriptors.
+   - Graceful zero / skip when a batch has no valid depth/correspondences.
+
+Train command:
+
+```bash
+python -m bitfeat.train --config configs/default.yaml \
+  --data-root /workspace/datasets/megadepth \
+  --index-dir index/train_local --device cuda
+```
 
 ## Evaluation plan
 
-Primary outdoor / viewpoint benchmarks:
+1. **HPatches** — MMA at 1/3/5 px (`python -m bitfeat.eval.hpatches`).
+2. **Matching recall** on MegaDepth / IMC-style splits when available.
+3. Optional: IMC Phototourism / Aachen pose AUC once descriptors are competitive.
 
-1. **HPatches** — Mean Matching Accuracy (MMA) at multiple pixel thresholds; also repeatability / matching score where useful.
-2. **Matching recall** — fraction of GT correspondences recovered after mutual nearest-neighbor matching (MegaDepth / IMC-style splits as available).
-3. Optional: IMC Phototourism / Aachen for pose AUC once descriptors are competitive.
+Compare against FP32 baselines of similar width and a width-matched ternary ablation.
 
-Compare against FP32 baselines of similar width and against a width-matched ternary ablation (same architecture, FP vs BitConv) to isolate the 1.58-bit cost.
+## Non-goals (v0)
 
-## Non-goals (v0 scaffold)
-
-- Shipping pretrained MegaDepth weights in this commit.
+- Shipping pretrained MegaDepth weights in-repo.
 - CUDA ternary kernels / fused BitGEMM (PyTorch STE path is enough to start).
 - Coupling to FastGS or any other monorepo package.
