@@ -1,0 +1,22 @@
+# BitFeat default training config
+model:
+  channels: [64, 128, 256, 256]   # ~2x tiny baseline width
+  blocks_per_stage: [2, 2, 2, 2]  # depth via repeated BitConv residuals
+  desc_dim: 128
+  method: absmean                 # absmean | absmedian
+  top_k: 1024
+
+train:
+  lr: 0.001
+  weight_decay: 0.0001
+  batch_size: 2
+  num_workers: 0
+  max_steps: 100000
+  log_every: 20
+  image_size: [480, 480]
+  desc_weight: 1.0
+  reproj_weight: 0.1
+
+data:
+  root: ""          # path to MegaDepth (empty -> synthetic pairs)
+  split: train
