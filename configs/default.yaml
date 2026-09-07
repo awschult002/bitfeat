@@ -16,7 +16,16 @@ train:
   image_size: [480, 480]
   desc_weight: 1.0
   reproj_weight: 0.1
+  desc_mode: dual_softmax         # dual_softmax | circle
+  num_samples: 512
 
 data:
-  root: ""          # path to MegaDepth (empty -> synthetic pairs)
+  # Full MegaDepth (~200GB) does not fit typical boxes (~80GB free).
+  # Use megadepth1500 images+depths + remapped index/train_local (see prepare script).
+  root: /workspace/datasets/megadepth
   split: train
+  index_dir: index/train_local    # remapped npz (~1500 pairs, depths present)
+  scene_info_dir: ""
+  min_overlap: 0.1
+  max_overlap: 0.7
+  require_depth: false            # true → skip pairs without depth h5
