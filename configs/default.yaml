@@ -1,0 +1,45 @@
+# BitFeat default training config
+model:
+  channels: [64, 128, 256, 256]   # ~2x tiny baseline width
+  blocks_per_stage: [2, 2, 2, 2]  # depth via repeated BitConv residuals
+  desc_dim: 128
+  method: absmean                 # absmean | absmedian
+  top_k: 1024
+
+train:
+  lr: 0.001
+  weight_decay: 0.0001
+  batch_size: 2
+  num_workers: 0
+  max_steps: 100000
+  log_every: 20
+  image_size: [480, 480]
+  desc_weight: 1.0
+  reproj_weight: 0.1
+  desc_mode: dual_softmax         # dual_softmax | circle
+  num_samples: 512
+  # Mixed precision (CUDA only): autocast + GradScaler. Use float16 on Turing
+  # (e.g. Quadro T2000, no bf16); bfloat16 on Ampere+ needs no loss scaling.
+  amp: false
+  amp_dtype: float16
+  grad_checkpoint: false          # recompute full-res stem + stage 0 in backward
+  grad_clip: 0.0                  # max grad norm; 0 = off
+  max_nonfinite_steps: 20         # abort after N consecutive NaN/inf losses
+  cudnn_benchmark: false         # true costs ~1 GB of cuDNN workspace on small GPUs
+  seed: 0
+  # Checkpoints: <output_dir>/ckpt_stepXXXXXXXX.pt every N steps (last K kept)
+  # plus <output_dir>/final.pt; continue a run with --resume auto
+  output_dir: runs/bitfeat
+  checkpoint_every: 1000
+  keep_last: 3
+
+data:
+  # Full MegaDepth (~200GB) does not fit typical boxes (~80GB free).
+  # Use megadepth1500 images+depths + remapped index/train_local (see prepare script).
+  root: /workspace/datasets/megadepth
+  split: train
+  index_dir: index/train_local    # remapped npz (~1500 pairs, depths present)
+  scene_info_dir: ""
+  min_overlap: 0.1
+  max_overlap: 0.7
+  require_depth: false            # true → skip pairs without depth h5
