@@ -80,6 +80,36 @@ python -m bitfeat.train --config configs/default.yaml \
   --device cuda
 ```
 
+### Checkpoints, resume, and mixed precision
+
+Every `train.checkpoint_every` steps (default 1000) the trainer writes
+`<output_dir>/ckpt_stepXXXXXXXX.pt` (model, optimizer, GradScaler, step, config,
+RNG states), keeps the newest `train.keep_last` (default 3), and writes
+`<output_dir>/final.pt` at `max_steps`. Ctrl-C / SIGTERM finishes the current
+step and checkpoints before exiting. Resume exactly (same data order and loss
+sampling) with `--resume auto` (newest checkpoint in `--output-dir`) or
+`--resume path/to/ckpt.pt`. Metrics go to `<output_dir>/metrics.jsonl`.
+
+`--amp` enables `torch.autocast` + `GradScaler` (CUDA; `--amp-dtype float16`
+by default, `bfloat16` on Ampere+). Ternarization (gamma, divide, round/STE)
+runs in FP32 on the FP32 shadow weights and all losses are computed in FP32;
+non-finite losses skip the update and abort after `max_nonfinite_steps` in a
+row. `--grad-checkpoint` recomputes the full-resolution stem + first stage in
+backward (BatchNorm running stats in those layers are updated twice per step).
+
+On a 4 GB GPU (Quadro T2000) the default batch 2 @ 480x480 fits only with
+`--amp --grad-checkpoint` (~3.0 GB peak). Note that the T2000 (TU117) has no
+fast FP16 tensor-core path: cuDNN's FP16 convs run ~4x slower than FP32 there,
+so AMP buys memory, not speed. On that card FP32 `--batch-size 1 --image-size
+384 384` (~1.8 it/s) or FP32 `--batch-size 1 --grad-checkpoint` at 480 are
+the faster choices; on Ampere+ GPUs prefer `--amp --amp-dtype bfloat16`.
+
+```bash
+python -m bitfeat.train --config configs/default.yaml \
+  --data-root ~/data/megadepth --device cuda --amp --grad-checkpoint \
+  --output-dir runs/bitfeat_main --resume auto
+```
+
 `--smoke` still works without any dataset. Losses warp with depth+pose+K; if a batch has no valid depth/correspondences the geometric terms are skipped gracefully.
 
 ## HPatches MMA
