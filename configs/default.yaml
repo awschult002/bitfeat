@@ -18,6 +18,20 @@ train:
   reproj_weight: 0.1
   desc_mode: dual_softmax         # dual_softmax | circle
   num_samples: 512
+  # Mixed precision (CUDA only): autocast + GradScaler. Use float16 on Turing
+  # (e.g. Quadro T2000, no bf16); bfloat16 on Ampere+ needs no loss scaling.
+  amp: false
+  amp_dtype: float16
+  grad_checkpoint: false          # recompute full-res stem + stage 0 in backward
+  grad_clip: 0.0                  # max grad norm; 0 = off
+  max_nonfinite_steps: 20         # abort after N consecutive NaN/inf losses
+  cudnn_benchmark: false         # true costs ~1 GB of cuDNN workspace on small GPUs
+  seed: 0
+  # Checkpoints: <output_dir>/ckpt_stepXXXXXXXX.pt every N steps (last K kept)
+  # plus <output_dir>/final.pt; continue a run with --resume auto
+  output_dir: runs/bitfeat
+  checkpoint_every: 1000
+  keep_last: 3
 
 data:
   # Full MegaDepth (~200GB) does not fit typical boxes (~80GB free).
