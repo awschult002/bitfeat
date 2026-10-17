@@ -9,6 +9,7 @@ Shadow weights stay in FP32; only the forward uses ternary values.
 
 from __future__ import annotations
 
+import contextlib
 from typing import Literal, Optional
 
 import torch
@@ -25,18 +26,33 @@ def ternarize(
     """Ternarize weights to {-1, 0, +1} and return (W_q, gamma).
 
     gamma is the per-tensor scale (mean or median of |W|).
-    """
-    abs_w = weight.abs()
-    if method == "absmedian":
-        # Flatten for a single median scale (BitNet-style).
-        gamma = abs_w.flatten().median().clamp_min(eps)
-    else:
-        gamma = abs_w.mean().clamp_min(eps)
 
-    # STE: round(clip(W/gamma, -1, 1)) — identity gradient through the quantizer.
-    w_scaled = (weight / (gamma + eps)).clamp(-1.0, 1.0)
-    w_q = (w_scaled.round() - w_scaled).detach() + w_scaled
+    The scale, divide, clip and round always run in the weight's own precision
+    (FP32 shadow weights) with autocast disabled, so mixed-precision training
+    never quantizes from FP16-rounded weights or computes gamma in FP16. Only the
+    consuming conv / linear is cast by autocast, and ``gamma * W_q`` takes just
+    three values per tensor, which FP16 represents without trouble.
+    """
+    with _autocast_off(weight.device.type):
+        abs_w = weight.abs()
+        if method == "absmedian":
+            # Flatten for a single median scale (BitNet-style).
+            gamma = abs_w.flatten().median().clamp_min(eps)
+        else:
+            gamma = abs_w.mean().clamp_min(eps)
+
+        # STE: round(clip(W/gamma, -1, 1)) — identity gradient through the quantizer.
+        w_scaled = (weight / (gamma + eps)).clamp(-1.0, 1.0)
+        w_q = (w_scaled.round() - w_scaled).detach() + w_scaled
     return w_q, gamma
+
+
+def _autocast_off(device_type: str):
+    """Context that disables autocast for ``device_type`` (no-op where unsupported)."""
+    try:
+        return torch.autocast(device_type=device_type, enabled=False)
+    except (RuntimeError, ValueError):
+        return contextlib.nullcontext()
 
 
 class BitLinear(nn.Module):

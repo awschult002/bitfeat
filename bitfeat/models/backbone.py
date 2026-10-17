@@ -12,6 +12,7 @@ from typing import List, Sequence, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint as _grad_ckpt
 
 from bitfeat.layers.bitconv import BitConv2d
 
@@ -70,8 +71,14 @@ class BitFeatBackbone(nn.Module):
         channels: Sequence[int] = (64, 128, 256, 256),
         blocks_per_stage: Sequence[int] = (2, 2, 2, 2),
         method: str = "absmean",
+        grad_checkpoint: bool = False,
     ) -> None:
         super().__init__()
+        # Recompute the full-resolution stem + first stage in backward instead of
+        # storing their activations (the largest backbone activations). Note that
+        # BatchNorm running stats get updated again during the recompute, i.e.
+        # those layers' running mean/var move with an effectively doubled momentum.
+        self.grad_checkpoint = bool(grad_checkpoint)
         if len(channels) != len(blocks_per_stage):
             raise ValueError("channels and blocks_per_stage must have the same length")
 
@@ -105,9 +112,16 @@ class BitFeatBackbone(nn.Module):
     def forward(self, x: torch.Tensor) -> List[torch.Tensor]:
         """Return multi-scale feature maps (one per stage)."""
         feats: List[torch.Tensor] = []
-        h = self.stem(x)
-        for stage in self.stages:
-            h = stage(h)
+        ckpt = self.grad_checkpoint and self.training and torch.is_grad_enabled()
+        if ckpt:
+            h = _grad_ckpt(self.stem, x, use_reentrant=False)
+        else:
+            h = self.stem(x)
+        for i, stage in enumerate(self.stages):
+            if ckpt and i == 0:
+                h = _grad_ckpt(stage, h, use_reentrant=False)
+            else:
+                h = stage(h)
             feats.append(h)
         return feats
 
