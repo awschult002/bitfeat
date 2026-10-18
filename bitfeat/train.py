@@ -333,6 +333,7 @@ def train_loop(cfg: Dict[str, Any], device: str, resume: Optional[str] = None) -
     scaler = _make_grad_scaler(use_scaler)
 
     step = 0
+    resume_extra: Dict[str, Any] = {}
     resume_path: Optional[Path] = None
     if resume:
         if str(resume) == "auto":
@@ -357,6 +358,7 @@ def train_loop(cfg: Dict[str, Any], device: str, resume: Optional[str] = None) -
             resume_path, model=model, optimizer=optim, scaler=scaler, map_location=device, validate=_check
         )
         step = int(ckpt["step"])
+        resume_extra = ckpt.get("extra") or {}
         old_cfg = ckpt.get("config") or {}
         old_bs = (old_cfg.get("train") or {}).get("batch_size")
         if old_bs is not None and int(old_bs) != batch_size:
@@ -381,7 +383,11 @@ def train_loop(cfg: Dict[str, Any], device: str, resume: Optional[str] = None) -
     def _save(path: Path) -> Path:
         return save_checkpoint(
             path, model=model, optimizer=optim, scaler=scaler, step=step, config=cfg,
-            extra={"steps_per_epoch": steps_per_epoch, "batch_size": batch_size},
+            extra={
+                "steps_per_epoch": steps_per_epoch,
+                "batch_size": batch_size,
+                "degenerate_skipped": degenerate_skipped,
+            },
         )
 
     # Stop cleanly on SIGINT / SIGTERM: finish the current step, checkpoint, exit.
@@ -406,6 +412,7 @@ def train_loop(cfg: Dict[str, Any], device: str, resume: Optional[str] = None) -
     model.train()
     nonfinite_run = 0
     amp_skipped = 0
+    degenerate_skipped = int(resume_extra.get("degenerate_skipped", 0))
     t_last, step_last = time.perf_counter(), step
     if device_type == "cuda":
         torch.cuda.reset_peak_memory_stats()
@@ -453,6 +460,18 @@ def train_loop(cfg: Dict[str, Any], device: str, resume: Optional[str] = None) -
                     print(f"step={step} non-finite {bad}; skipping update", file=sys.stderr)
                     if nonfinite_run >= max_nonfinite:
                         raise RuntimeError(f"{nonfinite_run} consecutive non-finite steps at step {step} ({bad})")
+                elif not loss.requires_grad:
+                    # Degenerate pair: no valid depth-warped correspondences, so
+                    # every loss term fell back to a constant zero with no graph
+                    # (DescriptorLoss / ReprojectionLoss early returns). Nothing to
+                    # learn from; skip the update but still consume the step.
+                    nonfinite_run = 0
+                    degenerate_skipped += 1
+                    print(
+                        f"step={step} degenerate batch (no valid correspondences, loss has no grad); "
+                        f"skipping update [{degenerate_skipped} so far]",
+                        file=sys.stderr,
+                    )
                 else:
                     nonfinite_run = 0
                     scaler.scale(loss).backward()
@@ -486,6 +505,9 @@ def train_loop(cfg: Dict[str, Any], device: str, resume: Optional[str] = None) -
                         rec["amp_scale"] = scaler.get_scale()
                         rec["amp_skipped"] = amp_skipped
                         msg += f" scale={rec['amp_scale']:.0f} skipped={amp_skipped}"
+                    if degenerate_skipped:
+                        rec["degenerate_skipped"] = degenerate_skipped
+                        msg += f" degenerate={degenerate_skipped}"
                     if device_type == "cuda":
                         rec["peak_mem_mib"] = round(torch.cuda.max_memory_allocated() / 2**20)
                         msg += f" mem={rec['peak_mem_mib']}MiB"
@@ -513,7 +535,13 @@ def train_loop(cfg: Dict[str, Any], device: str, resume: Optional[str] = None) -
     if stop["sig"] is not None and step < max_steps:
         # Preserve conventional exit status for the signal (130 for SIGINT, 143 for SIGTERM).
         raise SystemExit(128 + int(stop["sig"]))
-    return {"step": step, "model": model, "output_dir": out_dir, "final_checkpoint": final_path}
+    return {
+        "step": step,
+        "model": model,
+        "output_dir": out_dir,
+        "final_checkpoint": final_path,
+        "degenerate_skipped": degenerate_skipped,
+    }
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
